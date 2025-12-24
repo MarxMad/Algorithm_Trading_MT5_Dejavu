@@ -105,9 +105,9 @@ const color COLOR_GANANCIA = clrLime;
 const color COLOR_PERDIDA = clrRed;
 const ENUM_BASE_CORNER ESQUINA_GRAFICO = CORNER_LEFT_UPPER;  // Cambiado a esquina superior izquierda para facilitar alineación
 // Panel principal: posición desde la izquierda, evitando solapamiento con panel de control
-// Panel de control: X=20, ancho=290, termina en 310px
-// Panel de estadísticas: debe empezar después del panel de control + margen
-const int X_DIST = 330;     // Panel principal: 330px desde la izquierda (después del panel de control + 20px margen)
+// Panel de control: X=20, ancho=320, termina en 340px
+// Panel de estadísticas: debe empezar después del panel de control + margen más amplio
+const int X_DIST = 370;     // Panel principal: 370px desde la izquierda (después del panel de control + 30px margen)
 const int Y_DIST = 20;
 const int X_SIZE = 300;     // Ancho del panel
 const int Y_SIZE = 520;  // Altura del panel
@@ -118,6 +118,25 @@ bool g_tBuyLimit;
 bool g_tSellStop;
 bool g_tSellLimit;
 
+// Variables estáticas para preservar el estado del panel entre cambios de temporalidad
+static bool s_tBuyStop = false;
+static bool s_tBuyLimit = false;
+static bool s_tSellStop = false;
+static bool s_tSellLimit = false;
+static bool s_reponerLimits = true;
+static bool s_reponerStops = true;
+static int s_ordenesPorGrupo = 15;
+static int s_incrementoPorGrupo = 5;
+static bool s_estadoGuardado = false;
+
+// Variables globales para control de reposición de órdenes
+bool g_reponerLimits = true;   // Activar reposición de órdenes Limit
+bool g_reponerStops = true;    // Activar reposición de órdenes Stop
+
+// Variables globales para configuración de grupos
+int g_ordenesPorGrupo = 15;    // Número de órdenes antes de aumentar incremento
+int g_incrementoPorGrupo = 5;  // Incremento adicional por cada grupo
+
 // Constantes para panel de control
 const string PANEL_CONTROL = "PanelControl";
 const string BOTON_BUYSTOP = "BtnBuyStop";
@@ -127,8 +146,8 @@ const string BOTON_SELLLIMIT = "BtnSellLimit";
 const string BTN_APLICAR = "BtnAplicar";
 const int PANEL_CONTROL_X = 20;   // Panel de control: 20px desde la izquierda (esquina superior izquierda)
 const int PANEL_CONTROL_Y = 20;
-const int PANEL_CONTROL_WIDTH = 290;  // Ancho optimizado para diseño minimalista
-const int PANEL_CONTROL_HEIGHT = 200;  // Altura reducida - diseño compacto
+const int PANEL_CONTROL_WIDTH = 320;  // Ancho aumentado para nuevos elementos
+const int PANEL_CONTROL_HEIGHT = 320;  // Altura aumentada para nuevos elementos
 
 // Constantes para panel de eliminación de órdenes
 const string PANEL_QUITAORDENES = "PanelQuitaOrdenes";
@@ -171,6 +190,24 @@ input bool tBuyStop = false;            // Activar órdenes BuyStop
 input bool tBuyLimit = true;            // Activar órdenes BuyLimit
 input bool tSellStop = false;           // Activar órdenes SellStop
 input bool tSellLimit = true;           // Activar órdenes SellLimit
+
+//+------------------------------------------------------------------+
+//| PARÁMETROS DE CONFIGURACIÓN DE REPOSICIÓN                        |
+//+------------------------------------------------------------------+
+//| Control de reposición automática de órdenes Limit y Stop         |
+//+------------------------------------------------------------------+
+input string ConfigReposicion = "Configuracion de Reposicion";
+input bool reponerLimits = true;       // Reponer órdenes Limit automáticamente
+input bool reponerStops = true;        // Reponer órdenes Stop automáticamente
+
+//+------------------------------------------------------------------+
+//| PARÁMETROS DE CONFIGURACIÓN DE GRUPOS                            |
+//+------------------------------------------------------------------+
+//| Configuración de agrupación de órdenes y incremento progresivo   |
+//+------------------------------------------------------------------+
+input string ConfigGrupos = "Configuracion de Grupos";
+input int ordenesPorGrupo = 15;        // Número de órdenes por grupo antes de aumentar incremento
+input int incrementoPorGrupo = 5;      // Incremento adicional por cada grupo (en puntos)
 
 //+------------------------------------------------------------------+
 //| PARÁMETROS DE TAKE PROFIT DINÁMICO                               |
@@ -279,11 +316,32 @@ int OnInit()
    highestEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    maxDrawdown = initialBalance * maxDrawdownPercent / 100;
    
-   // Inicializar variables globales de control
-   g_tBuyStop = tBuyStop;
-   g_tBuyLimit = tBuyLimit;
-   g_tSellStop = tSellStop;
-   g_tSellLimit = tSellLimit;
+   // Restaurar estado del panel si fue guardado (cambio de temporalidad)
+   if(s_estadoGuardado)
+   {
+       // Restaurar desde variables estáticas
+       g_tBuyStop = s_tBuyStop;
+       g_tBuyLimit = s_tBuyLimit;
+       g_tSellStop = s_tSellStop;
+       g_tSellLimit = s_tSellLimit;
+       g_reponerLimits = s_reponerLimits;
+       g_reponerStops = s_reponerStops;
+       g_ordenesPorGrupo = s_ordenesPorGrupo;
+       g_incrementoPorGrupo = s_incrementoPorGrupo;
+       Print("Estado del panel restaurado después del cambio de temporalidad");
+   }
+   else
+   {
+       // Inicializar desde parámetros de entrada (primera vez)
+       g_tBuyStop = tBuyStop;
+       g_tBuyLimit = tBuyLimit;
+       g_tSellStop = tSellStop;
+       g_tSellLimit = tSellLimit;
+       g_reponerLimits = reponerLimits;
+       g_reponerStops = reponerStops;
+       g_ordenesPorGrupo = ordenesPorGrupo;
+       g_incrementoPorGrupo = incrementoPorGrupo;
+   }
    
    // Inicializar indicador ATR
    atrHandle = iATR(_Symbol, PERIOD_CURRENT, atrPeriod);
@@ -305,8 +363,9 @@ int OnInit()
    // Inicializar precios base para cálculos de rango
    InicializarPreciosBase();
    
-   QuitarOrdenes(getMagicNumberAnterior());
-   QuitarOrdenes(0);
+   // NO eliminar órdenes al iniciar - mantener órdenes existentes
+   // QuitarOrdenes(getMagicNumberAnterior());  // Comentado: no eliminar órdenes del magic anterior
+   // QuitarOrdenes(0);  // Comentado: no eliminar todas las órdenes
    MAGICN = RenovarMagicNumber();
 //--- Contar el numero de operaciones
    int contarOperaciones = 0;
@@ -347,12 +406,12 @@ int OnInit()
    string fileName = "incremento.txt";
    if(FileIsExist(fileName))
    {
-      int fileHandle = FileOpen("incremento.txt", FILE_TXT|FILE_READ|FILE_WRITE, ',');
+     int fileHandle = FileOpen("incremento.txt", FILE_TXT|FILE_READ|FILE_WRITE, ',');
       if(fileHandle != INVALID_HANDLE)
       {
          int incrementoLeido = (int)FileReadNumber(fileHandle);
          increment = incrementoLeido;  // Actualizar variable global (no se puede modificar input directamente)
-         FileClose(fileHandle);
+        FileClose(fileHandle);
          Print("Incremento leído desde archivo: ", incrementoLeido);
       }
    }
@@ -498,13 +557,13 @@ void CrearPanel()
         // Valor (solo si no es separador) - a la DERECHA de las etiquetas
         if(i != 12)
         {
-            ObjectCreate(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJ_LABEL, 0, 0, 0);
+        ObjectCreate(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJ_LABEL, 0, 0, 0);
             ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_XDISTANCE, valorX);
             ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_YDISTANCE, Y_DIST + yOffset);
             ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_CORNER, CORNER_LEFT_UPPER);
             ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_ANCHOR, ANCHOR_LEFT);
             ObjectSetString(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_FONT, "Arial Bold");
-            ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_FONTSIZE, 10);
+        ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_FONTSIZE, 10);
             ObjectSetInteger(0, NOMBRE_PANEL + "Value" + IntegerToString(i), OBJPROP_COLOR, COLOR_TEXTO);
         }
         
@@ -521,58 +580,104 @@ void ActualizarPanel()
     double drawdown = (highestEquity - equity) / highestEquity * 100;
     
     int buyOrders = 0, sellOrders = 0, pendingBuy = 0, pendingSell = 0;
-    double totalProfit = 0;
+    double totalProfit = 0;  // Profit flotante de posiciones abiertas
+    double realizedProfit = 0;  // Profit realizado de posiciones cerradas
     int totalTrades = 0, winTrades = 0;
+    double totalMarginUsed = 0;  // Margen usado por posiciones abiertas
     
-    // Contar órdenes abiertas y pendientes
+    // Contar órdenes abiertas y pendientes - filtrar por Magic Number Y Símbolo
     for(int i = 0; i < PositionsTotal(); i++)
     {
         if(pos_info.SelectByIndex(i))
         {
-            if(pos_info.Magic() == MAGICN)
+            // Filtrar estrictamente por Magic Number Y Símbolo
+            if(pos_info.Magic() == MAGICN && pos_info.Symbol() == _Symbol)
             {
+                // Contar según el tipo de posición
                 if(pos_info.Type() == POSITION_TYPE_BUY)
+                {
                     buyOrders++;
+                }
                 else if(pos_info.Type() == POSITION_TYPE_SELL)
+                {
                     sellOrders++;
+                }
                     
-                totalProfit += pos_info.Profit();
+                totalProfit += pos_info.Profit();  // Profit flotante
+                // Calcular margen usado usando OrderCalcMargin (método más confiable)
+                double marginCalc = 0;
+                ENUM_ORDER_TYPE orderType = (pos_info.Type() == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+                
+                if(OrderCalcMargin(orderType, _Symbol, pos_info.Volume(), pos_info.PriceOpen(), marginCalc))
+                {
+                    totalMarginUsed += marginCalc;
+                }
+                else
+                {
+                    // Fallback: cálculo aproximado usando margen inicial del símbolo
+                    double marginReq = SymbolInfoDouble(_Symbol, SYMBOL_MARGIN_INITIAL);
+                    if(marginReq > 0)
+                    {
+                        totalMarginUsed += pos_info.Volume() * marginReq;
+                    }
+                }
             }
         }
     }
     
+    // Contar órdenes pendientes - filtrar por Magic Number Y Símbolo
     for(int i = 0; i < OrdersTotal(); i++)
     {
         if(ord_info.SelectByIndex(i))
         {
-            if(ord_info.Magic() == MAGICN)
+            // Filtrar estrictamente por Magic Number Y Símbolo
+            if(ord_info.Magic() == MAGICN && ord_info.Symbol() == _Symbol)
             {
+                // Contar según el tipo de orden pendiente
                 if(ord_info.Type() == ORDER_TYPE_BUY_LIMIT || ord_info.Type() == ORDER_TYPE_BUY_STOP)
+                {
                     pendingBuy++;
+                }
                 else if(ord_info.Type() == ORDER_TYPE_SELL_LIMIT || ord_info.Type() == ORDER_TYPE_SELL_STOP)
+                {
                     pendingSell++;
+                }
             }
         }
     }
     
-    // Calcular win rate
-    if(HistorySelect(tiempo_ref, TimeCurrent()))
+    // Calcular win rate y profit realizado desde el inicio de la sesión
+    // Seleccionar historial desde el inicio de la sesión (tiempo_ref) o desde hace 30 días si no está inicializado
+    datetime desde = (tiempo_ref > 0) ? tiempo_ref : (TimeCurrent() - PeriodSeconds(PERIOD_D1) * 30);
+    if(HistorySelect(desde, TimeCurrent()))
     {
         for(int i = 0; i < HistoryDealsTotal(); i++)
         {
             if(deals_info.SelectByIndex(i))
             {
-                if(deals_info.Magic() == MAGICN && deals_info.Entry() == DEAL_ENTRY_OUT)
+                // Filtrar por Magic Number Y Símbolo para obtener solo deals del bot actual
+                if(deals_info.Magic() == MAGICN && 
+                   deals_info.Symbol() == _Symbol &&
+                   deals_info.Entry() == DEAL_ENTRY_OUT)  // Solo deals de salida (posiciones cerradas)
                 {
                     totalTrades++;
-                    if(deals_info.Profit() > 0)
+                    double dealProfit = deals_info.Profit();
+                    if(dealProfit > 0)
                         winTrades++;
+                    realizedProfit += dealProfit;  // Sumar profit realizado
                 }
             }
         }
     }
     
     double winRate = totalTrades > 0 ? (double)winTrades/totalTrades * 100 : 0;
+    
+    // Calcular Risk Level real basado en el margen usado vs balance
+    double riskLevel = 0;
+    if(balance > 0)
+    {
+        riskLevel = (totalMarginUsed / balance) * 100;  // Porcentaje de balance usado como margen
+    }
     
     // Contar órdenes por tipo
     int bsA, bsP, blA, blP, ssA, ssP, slA, slP;
@@ -589,9 +694,9 @@ void ActualizarPanel()
         IntegerToString(sellOrders),
         IntegerToString(pendingBuy),
         IntegerToString(pendingSell),
-        DoubleToString(totalProfit, 2),
+        DoubleToString(totalProfit + realizedProfit, 2),  // Profit total = flotante + realizado
         DoubleToString(winRate, 1) + "%",
-        DoubleToString(riskPerTrade, 1) + "%",
+        DoubleToString(riskLevel, 2) + "%",  // Risk Level real basado en margen usado
         "", // Separador (índice 12, no tiene valor)
         "A:" + IntegerToString(bsA) + " P:" + IntegerToString(bsP),
         "A:" + IntegerToString(blA) + " P:" + IntegerToString(blP),
@@ -614,9 +719,10 @@ void ActualizarPanel()
         {
             valorColor = drawdown > 10 ? C'255,100,100' : (drawdown > 5 ? C'255,200,0' : C'150,200,150');
         }
-        else if(i == 9) // Total Profit
+        else if(i == 9) // Total Profit (flotante + realizado)
         {
-            valorColor = totalProfit >= 0 ? C'0,200,0' : C'200,0,0';
+            double profitTotal = totalProfit + realizedProfit;
+            valorColor = profitTotal >= 0 ? C'0,200,0' : C'200,0,0';
         }
         else if(i == 10) // Win Rate
         {
@@ -644,60 +750,101 @@ void OnDeinit(const int reason)
         IndicatorRelease(atrHandle);
     }
     
-    // Eliminar todos los objetos del panel principal
-    ObjectsDeleteAll(0, NOMBRE_PANEL);
-    
-    // Eliminar todos los objetos del panel de control y sus elementos
-    ObjectsDeleteAll(0, PANEL_CONTROL);
-    
-    // Eliminar botones individuales del panel de control
-    ObjectDelete(0, BOTON_BUYSTOP);
-    ObjectDelete(0, BOTON_BUYLIMIT);
-    ObjectDelete(0, BOTON_SELLSTOP);
-    ObjectDelete(0, BOTON_SELLLIMIT);
-    ObjectDelete(0, BTN_APLICAR);
-    ObjectDelete(0, "BtnQuitaOrdenes");
-    
-    // Eliminar etiquetas y contadores del panel de control
-    string tipos[] = {"BuyStop", "BuyLimit", "SellStop", "SellLimit"};
-    for(int i = 0; i < 4; i++)
+    // NO eliminar órdenes si solo se está cambiando de temporalidad
+    // Solo eliminar órdenes si el EA se está removiendo completamente del gráfico
+    if(reason != REASON_CHARTCHANGE)
     {
-        ObjectDelete(0, PANEL_CONTROL + tipos[i] + "Label");
-        ObjectDelete(0, PANEL_CONTROL + tipos[i] + "Count");
-    }
-    
-    // Eliminar todos los objetos del panel de quitar órdenes
-    ObjectsDeleteAll(0, PANEL_QUITAORDENES);
-    ObjectDelete(0, INPUT_MAGIC);
-    ObjectDelete(0, INPUT_MAGIC + "Label");
-    ObjectDelete(0, BTN_BUSCAR);
-    ObjectDelete(0, BTN_ELIMINAR_TODAS);
-    ObjectDelete(0, BTN_CERRAR_PANEL);
-    
-    // Eliminar cualquier objeto residual que pueda tener el prefijo
-    int total = ObjectsTotal(0);
-    for(int i = total - 1; i >= 0; i--)
-    {
-        string name = ObjectName(0, i);
-        if(StringFind(name, NOMBRE_PANEL) == 0 || 
-           StringFind(name, PANEL_CONTROL) == 0 || 
-           StringFind(name, PANEL_QUITAORDENES) == 0 ||
-           StringFind(name, BOTON_BUYSTOP) == 0 ||
-           StringFind(name, BOTON_BUYLIMIT) == 0 ||
-           StringFind(name, BOTON_SELLSTOP) == 0 ||
-           StringFind(name, BOTON_SELLLIMIT) == 0 ||
-           StringFind(name, BTN_APLICAR) == 0 ||
-           StringFind(name, "BtnQuitaOrdenes") == 0)
+        // Eliminar todos los objetos del panel principal
+        ObjectsDeleteAll(0, NOMBRE_PANEL);
+        
+        // Eliminar todos los objetos del panel de control y sus elementos
+        ObjectsDeleteAll(0, PANEL_CONTROL);
+        
+        // Eliminar botones individuales del panel de control
+        ObjectDelete(0, BOTON_BUYSTOP);
+        ObjectDelete(0, BOTON_BUYLIMIT);
+        ObjectDelete(0, BOTON_SELLSTOP);
+        ObjectDelete(0, BOTON_SELLLIMIT);
+        ObjectDelete(0, BTN_APLICAR);
+        ObjectDelete(0, "BtnQuitaOrdenes");
+        ObjectDelete(0, "BtnReponerLimits");
+        ObjectDelete(0, "BtnReponerStops");
+        ObjectDelete(0, "LabelOrdenesGrupo");
+        ObjectDelete(0, "LabelIncrementoGrupo");
+        ObjectDelete(0, "ValorOrdenesGrupo");
+        ObjectDelete(0, "ValorIncrementoGrupo");
+        ObjectDelete(0, "BtnOrdenesGrupoMenos");
+        ObjectDelete(0, "BtnOrdenesGrupoMas");
+        ObjectDelete(0, "BtnIncrementoGrupoMenos");
+        ObjectDelete(0, "BtnIncrementoGrupoMas");
+        ObjectDelete(0, PANEL_CONTROL + "Separador1");
+        ObjectDelete(0, PANEL_CONTROL + "Separador2");
+        
+        // Eliminar etiquetas del panel de control
+        string tipos[] = {"BuyStop", "BuyLimit", "SellStop", "SellLimit"};
+        for(int i = 0; i < 4; i++)
         {
-            ObjectDelete(0, name);
+            ObjectDelete(0, PANEL_CONTROL + tipos[i] + "Label");
+            // Los contadores ya no existen en el panel de control
         }
+        
+        // Eliminar todos los objetos del panel de quitar órdenes
+        ObjectsDeleteAll(0, PANEL_QUITAORDENES);
+        ObjectDelete(0, INPUT_MAGIC);
+        ObjectDelete(0, INPUT_MAGIC + "Label");
+        ObjectDelete(0, BTN_BUSCAR);
+        ObjectDelete(0, BTN_ELIMINAR_TODAS);
+        ObjectDelete(0, BTN_CERRAR_PANEL);
+        
+        // Eliminar cualquier objeto residual que pueda tener el prefijo
+        int total = ObjectsTotal(0);
+        for(int i = total - 1; i >= 0; i--)
+        {
+            string name = ObjectName(0, i);
+            if(StringFind(name, NOMBRE_PANEL) == 0 || 
+               StringFind(name, PANEL_CONTROL) == 0 || 
+               StringFind(name, PANEL_QUITAORDENES) == 0 ||
+               StringFind(name, BOTON_BUYSTOP) == 0 ||
+               StringFind(name, BOTON_BUYLIMIT) == 0 ||
+               StringFind(name, BOTON_SELLSTOP) == 0 ||
+               StringFind(name, BOTON_SELLLIMIT) == 0 ||
+               StringFind(name, BTN_APLICAR) == 0 ||
+               StringFind(name, "BtnQuitaOrdenes") == 0)
+            {
+                ObjectDelete(0, name);
+            }
+        }
+        
+        // Forzar actualización del gráfico para eliminar cualquier objeto residual
+        ChartRedraw(0);
+        
+        // Solo eliminar órdenes si el EA se está removiendo completamente
+        QuitarOrdenes(MAGICN);
+        QuitarOrdenes(0);
     }
-    
-    // Forzar actualización del gráfico para eliminar cualquier objeto residual
-    ChartRedraw(0);
-    
-    QuitarOrdenes(MAGICN);
-    QuitarOrdenes(0);
+    else
+    {
+        // Si solo cambió la temporalidad, guardar el estado del panel antes de limpiar objetos
+        // Guardar estado actual en variables estáticas
+        s_tBuyStop = g_tBuyStop;
+        s_tBuyLimit = g_tBuyLimit;
+        s_tSellStop = g_tSellStop;
+        s_tSellLimit = g_tSellLimit;
+        s_reponerLimits = g_reponerLimits;
+        s_reponerStops = g_reponerStops;
+        s_ordenesPorGrupo = g_ordenesPorGrupo;
+        s_incrementoPorGrupo = g_incrementoPorGrupo;
+        s_estadoGuardado = true;
+        
+        // Limpiar objetos gráficos pero mantener órdenes
+        // Los objetos se recrearán en OnInit() del nuevo timeframe
+        ObjectsDeleteAll(0, NOMBRE_PANEL);
+        ObjectsDeleteAll(0, PANEL_CONTROL);
+        ObjectsDeleteAll(0, PANEL_QUITAORDENES);
+        ChartRedraw(0);
+        
+        Print("Estado del panel guardado para cambio de temporalidad");
+    }
 }
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
@@ -1023,7 +1170,7 @@ void OnTick()
         QuitarOrdenes(0);
         MAGICN = RenovarMagicNumber();
         ColocarOrdenesIniciales();
-        _contRA = 0;
+                 _contRA = 0;
     }
 }
 //+------------------------------------------------------------------+
@@ -1107,10 +1254,12 @@ void QuitarOrdenes (uint _MAGICN)
             j = trade.PositionClose(pos_info.Ticket());
             //}
          }
-         for(int i = numeroDeOrdenes; i >= 0; i--)
+         for(int i = numeroDeOrdenes - 1; i >= 0; i--)
          {
-            ord_info.SelectByIndex(i);
-            j = trade.OrderDelete(ord_info.Ticket());
+            if(ord_info.SelectByIndex(i))
+            {
+               j = trade.OrderDelete(ord_info.Ticket());
+            }
          }
          x++;
          Sleep(1000);
@@ -1127,28 +1276,25 @@ void QuitarOrdenes (uint _MAGICN)
          bool j = 0;
          Print(numeroDePosiciones + numeroDeOrdenes, " total orders");
          //---
+         // Cerrar posiciones con el magic number Y del símbolo actual
          for(int i = numeroDePosiciones - 1; i >= 0; i--)
          {
             seleccionado = pos_info.SelectByIndex(i);
-            //if(pos_info.Type() < 2)
-            //{
-            //double ClosePrice = 0;
-            //if(pos_info.Type() == POSITION_TYPE_BUY)
-            //{
-            //   ClosePrice = NormalizeDouble(SymbolInfoDouble(pos_info.Symbol(), SYMBOL_BID), _Digits);
-            //}
-            //if(pos_info.Type() == POSITION_TYPE_SELL)
-            //{
-            //   ClosePrice = NormalizeDouble(SymbolInfoDouble(pos_info.Symbol(), SYMBOL_ASK), _Digits);
-            //}
-            //---
-            j = trade.PositionClose(pos_info.Ticket());
-            //}
+            // Filtrar por magic number Y símbolo (activo) para evitar afectar otros bots
+            if(pos_info.Magic() == _MAGICN && pos_info.Symbol() == _Symbol)
+            {
+               j = trade.PositionClose(pos_info.Ticket());
+            }
          }
-         for(int i = numeroDeOrdenes; i >= 0; i--)
+         // Eliminar órdenes pendientes con el magic number Y del símbolo actual
+         for(int i = numeroDeOrdenes - 1; i >= 0; i--)
          {
-            ord_info.SelectByIndex(i);
-            j = trade.OrderDelete(ord_info.Ticket());
+            if(ord_info.SelectByIndex(i) && 
+               ord_info.Magic() == _MAGICN && 
+               ord_info.Symbol() == _Symbol)  // Solo del activo actual
+            {
+               j = trade.OrderDelete(ord_info.Ticket());
+            }
          }
          x++;
          Sleep(1000);
@@ -1319,6 +1465,26 @@ bool RevisarStops()
 //+------------------------------------------------------------------+
 void ColocarOrdenesIniciales ()
 {
+   // Verificar si ya existen órdenes pendientes con este Magic Number
+   // Si existen, no colocar nuevas órdenes (evita duplicar al cambiar temporalidad)
+   int ordenesPendientesExistentes = 0;
+   for(int check = 0; check < OrdersTotal(); check++)
+   {
+       if(ord_info.SelectByIndex(check) && 
+          ord_info.Magic() == MAGICN && 
+          ord_info.Symbol() == _Symbol)
+       {
+           ordenesPendientesExistentes++;
+       }
+   }
+   
+   // Si ya hay órdenes pendientes, no colocar nuevas (probablemente se cambió de temporalidad)
+   if(ordenesPendientesExistentes > 0)
+   {
+       Print("Ya existen ", ordenesPendientesExistentes, " órdenes pendientes. No se colocarán nuevas órdenes.");
+       return;
+   }
+   
    double precioBid = 0,
           precioAsk = 0,
           precioBidOriginal = 0,
@@ -1340,9 +1506,9 @@ void ColocarOrdenesIniciales ()
    for(int j = 0; j < cantidadDeOperaciones; j++)
    {
       //Calcula el nuevo precio de la orden
-      if(j % 15 == 0 && j != 0)
+      if(j % g_ordenesPorGrupo == 0 && j != 0)
       {
-         incremento_temp += 5;
+         incremento_temp += g_incrementoPorGrupo;
       }
       ultimoPrecioBid -= incremento_temp * Point();
       ultimoPrecioAsk -= incremento_temp * Point();
@@ -1372,9 +1538,9 @@ void ColocarOrdenesIniciales ()
    for(int i = 0; i < cantidadDeOperaciones; i++)
    {
       // Calcula el nuevo precio de la orden
-      if(i % 15 == 0 && i != 0)
+      if(i % g_ordenesPorGrupo == 0 && i != 0)
       {
-         incremento_temp += 5;
+         incremento_temp += g_incrementoPorGrupo;
       }
       ultimoPrecioBid += incremento_temp * Point();
       ultimoPrecioAsk += incremento_temp * Point();
@@ -1389,11 +1555,11 @@ void ColocarOrdenesIniciales ()
       }
       // Coloco orden de BUYSTOP (separado del SELLLIMIT)
       if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY) && RevisarNuevaOrden() && g_tBuyStop)
-      {
+         {
          double tpValueBS = usarTPDinamico ? CalcularTakeProfitDinamico(incremento_temp) : (tpinverso * Point());
          if(!trade.BuyStop(lot, NormalizeDouble(ultimoPrecioAsk, _Digits), _Symbol, NormalizeDouble(ultimoPrecioBid - (slinverso * Point()), _Digits), NormalizeDouble(ultimoPrecioBid + tpValueBS, _Digits), 0, 0, "4"))
-         {
-            Print("Error placing BUYSTOP order: ", GetLastError());
+            {
+               Print("Error placing BUYSTOP order: ", GetLastError());
          }
       }
    }
@@ -1478,10 +1644,15 @@ void ReponerOrdenes()
         // Reponer órdenes según el tipo
                   if(RevisarNuevaOrden())
                   {
-            // SELLSTOP
+            // SELLSTOP - Verificar si reposición de Stops está activada
             if(StringFind(order.comment, "5") == 0)
             {
+                if(g_reponerStops)  // Solo reponer si está activado
+            {
                 if(order.isProfit)
+                    {
+                        // Si ganó, convertir a SellLimit (pero solo si reposición de Limits está activada)
+                        if(g_reponerLimits)
                 {
                     trade.SellLimit(lot, 
                         NormalizeDouble(order.price, _Digits),
@@ -1489,6 +1660,7 @@ void ReponerOrdenes()
                         NormalizeDouble(order.price + diferenciaBidAsk + (stopLoss * Point()), _Digits),
                         NormalizeDouble(order.price + diferenciaBidAsk - (takeProfit * Point()), _Digits),
                         0, 0, "3");
+                        }
                 }
                 else if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_SELL))
                 {
@@ -1500,8 +1672,11 @@ void ReponerOrdenes()
                         0, 0, "5");
                 }
             }
-            // BUYLIMIT
+            }
+            // BUYLIMIT - Verificar si reposición de Limits está activada
             else if(StringFind(order.comment, "2") == 0 && CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY))
+            {
+                if(g_reponerLimits)  // Solo reponer si está activado
             {
                 trade.BuyLimit(lot,
                     NormalizeDouble(order.price, _Digits),
@@ -1510,8 +1685,11 @@ void ReponerOrdenes()
                     NormalizeDouble(order.tp, _Digits),
                     0, 0, "2");
             }
-            // SELLLIMIT
+            }
+            // SELLLIMIT - Verificar si reposición de Limits está activada
             else if(StringFind(order.comment, "3") == 0 && CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_SELL))
+            {
+                if(g_reponerLimits)  // Solo reponer si está activado
             {
                 trade.SellLimit(lot,
                     NormalizeDouble(order.price, _Digits),
@@ -1520,10 +1698,16 @@ void ReponerOrdenes()
                     NormalizeDouble(order.tp, _Digits),
                     0, 0, "3");
             }
-            // BUYSTOP
+            }
+            // BUYSTOP - Verificar si reposición de Stops está activada
             else if(StringFind(order.comment, "4") == 0)
             {
+                if(g_reponerStops)  // Solo reponer si está activado
+            {
                 if(order.isProfit)
+                    {
+                        // Si ganó, convertir a BuyLimit (pero solo si reposición de Limits está activada)
+                        if(g_reponerLimits)
                 {
                     trade.BuyLimit(lot,
                         NormalizeDouble(order.price, _Digits),
@@ -1531,6 +1715,7 @@ void ReponerOrdenes()
                         NormalizeDouble(order.price - diferenciaBidAsk - (stop_loss * Point()), _Digits),
                         NormalizeDouble(order.price - diferenciaBidAsk + (take_profit * Point()), _Digits),
                         0, 0, "2");
+                        }
                 }
                 else if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY))
                 {
@@ -1540,6 +1725,7 @@ void ReponerOrdenes()
                         NormalizeDouble(order.sl, _Digits),
                         NormalizeDouble(order.tp, _Digits),
                         0, 0, "4");
+                    }
                 }
             }
         }
@@ -1589,29 +1775,66 @@ void ContarOrdenesPorTipo(int &buyStopActivas, int &buyStopPendientes,
     sellStopActivas = 0; sellStopPendientes = 0;
     sellLimitActivas = 0; sellLimitPendientes = 0;
     
-    // Contar posiciones abiertas
+    // Seleccionar historial de deals para identificar el tipo original por comentario
+    datetime desde = TimeCurrent() - PeriodSeconds(PERIOD_D1) * 30; // Últimos 30 días para mayor cobertura
+    HistorySelect(desde, TimeCurrent());
+    
+    // Contar posiciones abiertas - filtrar por Magic Number Y Símbolo
     for(int i = 0; i < PositionsTotal(); i++)
     {
-        if(pos_info.SelectByIndex(i) && pos_info.Magic() == MAGICN)
+        if(pos_info.SelectByIndex(i) && 
+           pos_info.Magic() == MAGICN && 
+           pos_info.Symbol() == _Symbol)  // Solo del activo actual
         {
+            ulong positionId = pos_info.Identifier();
+            string comentarioTipo = "";
+            
+            // Buscar el deal de entrada (DEAL_ENTRY_IN) para esta posición
+            // Buscar desde el más reciente hacia atrás
+            for(int j = HistoryDealsTotal() - 1; j >= 0; j--)
+            {
+                ulong dealTicket = HistoryDealGetTicket(j);
+                if(dealTicket == 0) continue;
+                
+                if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) == MAGICN &&
+                   HistoryDealGetString(dealTicket, DEAL_SYMBOL) == _Symbol &&
+                   HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) == positionId &&
+                   HistoryDealGetInteger(dealTicket, DEAL_ENTRY) == DEAL_ENTRY_IN)
+                {
+                    comentarioTipo = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+                    break; // Encontrado, salir del bucle
+                }
+            }
+            
+            // Identificar tipo según comentario: "2"=BuyLimit, "3"=SellLimit, "4"=BuyStop, "5"=SellStop
+            // Buscar el número en cualquier parte del comentario (más flexible)
             if(pos_info.Type() == POSITION_TYPE_BUY)
             {
-                // Las posiciones BUY pueden venir de BuyLimit o BuyStop
-                // Por simplicidad, las contamos como BuyLimit activas
-                buyLimitActivas++;
+                // Buscar "4" o "2" en el comentario
+                if(StringFind(comentarioTipo, "4") >= 0)  // Contiene "4" (BuyStop)
+                    buyStopActivas++;
+                else if(StringFind(comentarioTipo, "2") >= 0)  // Contiene "2" (BuyLimit)
+                    buyLimitActivas++;
+                // Si no encontramos comentario, no contar para evitar errores
             }
             else if(pos_info.Type() == POSITION_TYPE_SELL)
             {
-                // Las posiciones SELL pueden venir de SellLimit o SellStop
-                sellLimitActivas++;
+                // Buscar "5" o "3" en el comentario
+                if(StringFind(comentarioTipo, "5") >= 0)  // Contiene "5" (SellStop)
+                    sellStopActivas++;
+                else if(StringFind(comentarioTipo, "3") >= 0)  // Contiene "3" (SellLimit)
+                    sellLimitActivas++;
+                // Si no encontramos comentario, no contar para evitar errores
             }
         }
     }
     
-    // Contar órdenes pendientes
+    // Contar órdenes pendientes - filtrar por Magic Number Y Símbolo
     for(int i = 0; i < OrdersTotal(); i++)
     {
-        if(ord_info.SelectByIndex(i) && ord_info.Magic() == MAGICN)
+        if(ord_info.SelectByIndex(i) && 
+           ord_info.Magic() == MAGICN && 
+           ord_info.Symbol() == _Symbol)  // Solo del activo actual
         {
             if(ord_info.Type() == ORDER_TYPE_BUY_STOP)
                 buyStopPendientes++;
@@ -1653,6 +1876,7 @@ void CrearPanelControl()
     ObjectSetInteger(0, PANEL_CONTROL + "Fondo", OBJPROP_WIDTH, 1);
     ObjectSetInteger(0, PANEL_CONTROL + "Fondo", OBJPROP_BACK, false);
     ObjectSetInteger(0, PANEL_CONTROL + "Fondo", OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, PANEL_CONTROL + "Fondo", OBJPROP_ZORDER, 0);  // Fondo en capa inferior
     
     // Título simple - sin barra de fondo
     ObjectCreate(0, PANEL_CONTROL + "Titulo", OBJ_LABEL, 0, 0, 0);
@@ -1702,21 +1926,176 @@ void CrearPanelControl()
         ObjectSetInteger(0, botones[i], OBJPROP_FONTSIZE, 8);
         ObjectSetInteger(0, botones[i], OBJPROP_SELECTABLE, true);
         
-        // Contador simple
-        ObjectCreate(0, PANEL_CONTROL + tipos[i] + "Count", OBJ_LABEL, 0, 0, 0);
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_XDISTANCE, PANEL_CONTROL_X + countX);
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-        ObjectSetString(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_TEXT, "A:0 P:0");
-        ObjectSetString(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_FONT, "Arial");
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_FONTSIZE, 8);
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_COLOR, C'150,150,150');
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        // Los contadores A:P solo se muestran en el panel de estadísticas, no aquí
         
         yPos += 28; // Espaciado compacto
     }
     
     yPos += 8;
+    
+    // Separador visual
+    ObjectCreate(0, PANEL_CONTROL + "Separador1", OBJ_RECTANGLE_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 5);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_XSIZE, PANEL_CONTROL_WIDTH - 10);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_YSIZE, 1);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_BGCOLOR, C'60,60,70');
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador1", OBJPROP_BACK, false);
+    
+    yPos += 12;
+    
+    // Toggle Reponer Limits
+    ObjectCreate(0, "BtnReponerLimits", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 10);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_XSIZE, 140);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_YSIZE, 22);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnReponerLimits", OBJPROP_TEXT, g_reponerLimits ? "Reponer Limits: ON" : "Reponer Limits: OFF");
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_BGCOLOR, g_reponerLimits ? C'0,120,0' : C'80,80,80');
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnReponerLimits", OBJPROP_FONT, "Arial");
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_FONTSIZE, 8);
+    ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_SELECTABLE, true);
+    
+    yPos += 26;
+    
+    // Toggle Reponer Stops
+    ObjectCreate(0, "BtnReponerStops", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 10);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_XSIZE, 140);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_YSIZE, 22);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnReponerStops", OBJPROP_TEXT, g_reponerStops ? "Reponer Stops: ON" : "Reponer Stops: OFF");
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_BGCOLOR, g_reponerStops ? C'0,120,0' : C'80,80,80');
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnReponerStops", OBJPROP_FONT, "Arial");
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_FONTSIZE, 8);
+    ObjectSetInteger(0, "BtnReponerStops", OBJPROP_SELECTABLE, true);
+    
+    yPos += 30;
+    
+    // Separador visual 2
+    ObjectCreate(0, PANEL_CONTROL + "Separador2", OBJ_RECTANGLE_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 5);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_XSIZE, PANEL_CONTROL_WIDTH - 10);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_YSIZE, 1);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_BGCOLOR, C'60,60,70');
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetInteger(0, PANEL_CONTROL + "Separador2", OBJPROP_BACK, false);
+    
+    yPos += 12;
+    
+    // Campo Órdenes por Grupo - con botones +/- para modificar
+    ObjectCreate(0, "LabelOrdenesGrupo", OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, "LabelOrdenesGrupo", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 10);
+    ObjectSetInteger(0, "LabelOrdenesGrupo", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "LabelOrdenesGrupo", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "LabelOrdenesGrupo", OBJPROP_TEXT, "Órdenes por Grupo:");
+    ObjectSetString(0, "LabelOrdenesGrupo", OBJPROP_FONT, "Arial");
+    ObjectSetInteger(0, "LabelOrdenesGrupo", OBJPROP_FONTSIZE, 8);
+    ObjectSetInteger(0, "LabelOrdenesGrupo", OBJPROP_COLOR, C'180,180,180');
+    
+    // Botón menos
+    ObjectCreate(0, "BtnOrdenesGrupoMenos", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 130);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos - 2);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_XSIZE, 25);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_YSIZE, 20);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnOrdenesGrupoMenos", OBJPROP_TEXT, "-");
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_BGCOLOR, C'100,100,100');
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnOrdenesGrupoMenos", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_FONTSIZE, 10);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMenos", OBJPROP_SELECTABLE, true);
+    
+    // Valor mostrado - centrado entre los botones
+    // Botón - termina en: 130 + 25 = 155
+    // Botón + empieza en: 185
+    // Centro: (155 + 185) / 2 = 170
+    ObjectCreate(0, "ValorOrdenesGrupo", OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 170);
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "ValorOrdenesGrupo", OBJPROP_TEXT, IntegerToString(g_ordenesPorGrupo));
+    ObjectSetString(0, "ValorOrdenesGrupo", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_FONTSIZE, 9);
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_COLOR, clrWhite);
+    ObjectSetInteger(0, "ValorOrdenesGrupo", OBJPROP_ANCHOR, ANCHOR_CENTER);
+    
+    // Botón más
+    ObjectCreate(0, "BtnOrdenesGrupoMas", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 185);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos - 2);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_XSIZE, 25);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_YSIZE, 20);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnOrdenesGrupoMas", OBJPROP_TEXT, "+");
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_BGCOLOR, C'100,100,100');
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnOrdenesGrupoMas", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_FONTSIZE, 10);
+    ObjectSetInteger(0, "BtnOrdenesGrupoMas", OBJPROP_SELECTABLE, true);
+    
+    yPos += 25;
+    
+    // Campo Incremento por Grupo - con botones +/- para modificar
+    ObjectCreate(0, "LabelIncrementoGrupo", OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, "LabelIncrementoGrupo", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 10);
+    ObjectSetInteger(0, "LabelIncrementoGrupo", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "LabelIncrementoGrupo", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "LabelIncrementoGrupo", OBJPROP_TEXT, "Incremento por Grupo:");
+    ObjectSetString(0, "LabelIncrementoGrupo", OBJPROP_FONT, "Arial");
+    ObjectSetInteger(0, "LabelIncrementoGrupo", OBJPROP_FONTSIZE, 8);
+    ObjectSetInteger(0, "LabelIncrementoGrupo", OBJPROP_COLOR, C'180,180,180');
+    
+    // Botón menos
+    ObjectCreate(0, "BtnIncrementoGrupoMenos", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 130);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos - 2);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_XSIZE, 25);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_YSIZE, 20);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnIncrementoGrupoMenos", OBJPROP_TEXT, "-");
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_BGCOLOR, C'100,100,100');
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnIncrementoGrupoMenos", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_FONTSIZE, 10);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMenos", OBJPROP_SELECTABLE, true);
+    
+    // Valor mostrado - centrado entre los botones
+    // Botón - termina en: 130 + 25 = 155
+    // Botón + empieza en: 185
+    // Centro: (155 + 185) / 2 = 170
+    ObjectCreate(0, "ValorIncrementoGrupo", OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 170);
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos);
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "ValorIncrementoGrupo", OBJPROP_TEXT, IntegerToString(g_incrementoPorGrupo));
+    ObjectSetString(0, "ValorIncrementoGrupo", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_FONTSIZE, 9);
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_COLOR, clrWhite);
+    ObjectSetInteger(0, "ValorIncrementoGrupo", OBJPROP_ANCHOR, ANCHOR_CENTER);
+    
+    // Botón más
+    ObjectCreate(0, "BtnIncrementoGrupoMas", OBJ_BUTTON, 0, 0, 0);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_XDISTANCE, PANEL_CONTROL_X + 185);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_YDISTANCE, PANEL_CONTROL_Y + yPos - 2);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_XSIZE, 25);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_YSIZE, 20);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+    ObjectSetString(0, "BtnIncrementoGrupoMas", OBJPROP_TEXT, "+");
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_BGCOLOR, C'100,100,100');
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_COLOR, clrWhite);
+    ObjectSetString(0, "BtnIncrementoGrupoMas", OBJPROP_FONT, "Arial Bold");
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_FONTSIZE, 10);
+    ObjectSetInteger(0, "BtnIncrementoGrupoMas", OBJPROP_SELECTABLE, true);
+    
+    yPos += 30;
     
     // Botones simples y minimalistas
     ObjectCreate(0, BTN_APLICAR, OBJ_BUTTON, 0, 0, 0);
@@ -1749,32 +2128,20 @@ void CrearPanelControl()
 // Función para actualizar el panel de control
 void ActualizarPanelControl()
 {
-    int bsA, bsP, blA, blP, ssA, ssP, slA, slP;
-    ContarOrdenesPorTipo(bsA, bsP, blA, blP, ssA, ssP, slA, slP);
-    
-    string tipos[] = {"BuyStop", "BuyLimit", "SellStop", "SellLimit"};
+    // Actualizar botones - los contadores A:P solo se muestran en el panel de estadísticas
     string botones[] = {BOTON_BUYSTOP, BOTON_BUYLIMIT, BOTON_SELLSTOP, BOTON_SELLLIMIT};
-    int activas[] = {bsA, blA, ssA, slA};
-    int pendientes[] = {bsP, blP, ssP, slP};
     bool estados[] = {g_tBuyStop, g_tBuyLimit, g_tSellStop, g_tSellLimit};
     
     for(int i = 0; i < 4; i++)
     {
-        // Actualizar contador
-        string texto = "A:" + IntegerToString(activas[i]) + " P:" + IntegerToString(pendientes[i]);
-        ObjectSetString(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_TEXT, texto);
-        
         // Actualizar botón - diseño minimalista
         ObjectSetString(0, botones[i], OBJPROP_TEXT, estados[i] ? "ON" : "OFF");
         ObjectSetInteger(0, botones[i], OBJPROP_BGCOLOR, estados[i] ? C'0,120,0' : C'80,80,80');
-        
-        // Color del contador simple
-        color colorContador = C'150,150,150';
-        if(activas[i] + pendientes[i] > 0)
-            colorContador = C'200,200,200'; // Más claro si hay órdenes
-        
-        ObjectSetInteger(0, PANEL_CONTROL + tipos[i] + "Count", OBJPROP_COLOR, colorContador);
     }
+    
+    // Actualizar valores de órdenes por grupo e incremento por grupo
+    ObjectSetString(0, "ValorOrdenesGrupo", OBJPROP_TEXT, IntegerToString(g_ordenesPorGrupo));
+    ObjectSetString(0, "ValorIncrementoGrupo", OBJPROP_TEXT, IntegerToString(g_incrementoPorGrupo));
 }
 
 //+------------------------------------------------------------------+
@@ -1929,25 +2296,29 @@ void OcultarPanelQuitaOrdenes()
 
 void BuscarOrdenesPorMagic(uint magicNum)
 {
-    string lista = "Ordenes encontradas:\n\n";
+    string lista = "Ordenes encontradas (" + _Symbol + "):\n\n";
     int contador = 0;
     
-    // Buscar posiciones
+    // Buscar posiciones - filtrar por magic number Y símbolo (activo)
     for(int i = 0; i < PositionsTotal(); i++)
     {
-        if(pos_info.SelectByIndex(i) && pos_info.Magic() == magicNum)
+        if(pos_info.SelectByIndex(i) && 
+           pos_info.Magic() == magicNum && 
+           pos_info.Symbol() == _Symbol)  // Solo del activo actual
         {
             contador++;
             string tipo = pos_info.Type() == POSITION_TYPE_BUY ? "BUY" : "SELL";
             lista += IntegerToString(contador) + ". " + tipo + " Activa - Ticket: " + 
-                     IntegerToString(pos_info.Ticket()) + "\n";
+                     IntegerToString(pos_info.Ticket()) + " (" + pos_info.Symbol() + ")\n";
         }
     }
     
-    // Buscar órdenes pendientes
+    // Buscar órdenes pendientes - filtrar por magic number Y símbolo (activo)
     for(int i = 0; i < OrdersTotal(); i++)
     {
-        if(ord_info.SelectByIndex(i) && ord_info.Magic() == magicNum)
+        if(ord_info.SelectByIndex(i) && 
+           ord_info.Magic() == magicNum && 
+           ord_info.Symbol() == _Symbol)  // Solo del activo actual
         {
             contador++;
             string tipo = "";
@@ -1957,12 +2328,13 @@ void BuscarOrdenesPorMagic(uint magicNum)
             else if(ord_info.Type() == ORDER_TYPE_SELL_LIMIT) tipo = "SELLLIMIT";
             
             lista += IntegerToString(contador) + ". " + tipo + " Pendiente - Ticket: " + 
-                     IntegerToString(ord_info.Ticket()) + "\n";
+                     IntegerToString(ord_info.Ticket()) + " (" + ord_info.Symbol() + ")\n";
         }
     }
     
     if(contador == 0)
-        lista = "No se encontraron ordenes con Magic Number: " + IntegerToString(magicNum);
+        lista = "No se encontraron ordenes con Magic Number " + IntegerToString(magicNum) + 
+                " en " + _Symbol;
     
     ObjectSetString(0, PANEL_QUITAORDENES + "Lista", OBJPROP_TEXT, lista);
 }
@@ -2014,6 +2386,22 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             g_tSellLimit = !g_tSellLimit;
             ObjectSetString(0, BOTON_SELLLIMIT, OBJPROP_TEXT, g_tSellLimit ? "ON" : "OFF");
             ObjectSetInteger(0, BOTON_SELLLIMIT, OBJPROP_BGCOLOR, g_tSellLimit ? clrGreen : clrRed);
+            ChartRedraw();
+        }
+        // Toggle Reponer Limits
+        else if(sparam == "BtnReponerLimits")
+        {
+            g_reponerLimits = !g_reponerLimits;
+            ObjectSetString(0, "BtnReponerLimits", OBJPROP_TEXT, g_reponerLimits ? "Reponer Limits: ON" : "Reponer Limits: OFF");
+            ObjectSetInteger(0, "BtnReponerLimits", OBJPROP_BGCOLOR, g_reponerLimits ? C'0,120,0' : C'80,80,80');
+            ChartRedraw();
+        }
+        // Toggle Reponer Stops
+        else if(sparam == "BtnReponerStops")
+        {
+            g_reponerStops = !g_reponerStops;
+            ObjectSetString(0, "BtnReponerStops", OBJPROP_TEXT, g_reponerStops ? "Reponer Stops: ON" : "Reponer Stops: OFF");
+            ObjectSetInteger(0, "BtnReponerStops", OBJPROP_BGCOLOR, g_reponerStops ? C'0,120,0' : C'80,80,80');
             ChartRedraw();
         }
         // Botón Aplicar
@@ -2076,7 +2464,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         else if(sparam == BTN_ELIMINAR_TODAS)
         {
             if(MessageBox("¿Esta seguro de eliminar todas las ordenes con Magic Number " + 
-                         IntegerToString(MAGICN) + "?", "Confirmar", MB_YESNO | MB_ICONQUESTION) == IDYES)
+                         IntegerToString(MAGICN) + " en " + _Symbol + "?", 
+                         "Confirmar", MB_YESNO | MB_ICONQUESTION) == IDYES)
             {
                 QuitarOrdenes(MAGICN);
                 BuscarOrdenesPorMagic(MAGICN);
@@ -2088,15 +2477,61 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             OcultarPanelQuitaOrdenes();
             ChartRedraw();
         }
+        // Botones para modificar Órdenes por Grupo
+        else if(sparam == "BtnOrdenesGrupoMenos")
+        {
+            if(g_ordenesPorGrupo > 1)
+            {
+                g_ordenesPorGrupo--;
+                ObjectSetString(0, "ValorOrdenesGrupo", OBJPROP_TEXT, IntegerToString(g_ordenesPorGrupo));
+                Print("Órdenes por grupo: ", g_ordenesPorGrupo);
+                ChartRedraw();
+            }
+        }
+        else if(sparam == "BtnOrdenesGrupoMas")
+        {
+            if(g_ordenesPorGrupo < 100)
+            {
+                g_ordenesPorGrupo++;
+                ObjectSetString(0, "ValorOrdenesGrupo", OBJPROP_TEXT, IntegerToString(g_ordenesPorGrupo));
+                Print("Órdenes por grupo: ", g_ordenesPorGrupo);
+                ChartRedraw();
+            }
+        }
+        // Botones para modificar Incremento por Grupo
+        else if(sparam == "BtnIncrementoGrupoMenos")
+        {
+            if(g_incrementoPorGrupo > 1)
+            {
+                g_incrementoPorGrupo--;
+                ObjectSetString(0, "ValorIncrementoGrupo", OBJPROP_TEXT, IntegerToString(g_incrementoPorGrupo));
+                Print("Incremento por grupo: ", g_incrementoPorGrupo);
+                ChartRedraw();
+            }
+        }
+        else if(sparam == "BtnIncrementoGrupoMas")
+        {
+            if(g_incrementoPorGrupo < 50)
+            {
+                g_incrementoPorGrupo++;
+                ObjectSetString(0, "ValorIncrementoGrupo", OBJPROP_TEXT, IntegerToString(g_incrementoPorGrupo));
+                Print("Incremento por grupo: ", g_incrementoPorGrupo);
+                ChartRedraw();
+            }
+        }
     }
 }
 
 // Función auxiliar para eliminar órdenes por tipo
+// Filtra por magic number, símbolo (activo) y tipo de orden
 void QuitarOrdenesPorTipo(ENUM_ORDER_TYPE tipoOrden)
 {
     for(int i = OrdersTotal() - 1; i >= 0; i--)
     {
-        if(ord_info.SelectByIndex(i) && ord_info.Magic() == MAGICN && ord_info.Type() == tipoOrden)
+        if(ord_info.SelectByIndex(i) && 
+           ord_info.Magic() == MAGICN && 
+           ord_info.Symbol() == _Symbol &&  // Solo del activo actual
+           ord_info.Type() == tipoOrden)
         {
             trade.OrderDelete(ord_info.Ticket());
         }

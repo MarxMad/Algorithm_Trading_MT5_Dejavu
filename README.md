@@ -10,9 +10,13 @@
 - ✅ **Take Profit Dinámico**: Se ajusta automáticamente según el incremento entre órdenes
 - ✅ **Trailing Stop**: Ajusta el Stop Loss cuando el precio se mueve a favor
 - ✅ **Panel de Control Gráfico**: Interfaz visual para activar/desactivar tipos de órdenes
+- ✅ **Control de Reposición**: Activar/desactivar reposición de límites y stops independientemente
+- ✅ **Configuración Dinámica**: Modificar órdenes por grupo e incremento por grupo en tiempo real
 - ✅ **Gestión de Riesgos Avanzada**: Control de drawdown, tamaño de lote basado en riesgo, SL dinámico con ATR
 - ✅ **Estadísticas en Tiempo Real**: Panel informativo con métricas de rendimiento
-- ✅ **Eliminación de Órdenes por Magic Number**: Herramienta para gestionar órdenes específicas
+- ✅ **Eliminación de Órdenes por Magic Number**: Herramienta para gestionar órdenes específicas con filtrado por activo
+- ✅ **Multi-Instancia**: Soporte para ejecutar múltiples bots en diferentes activos simultáneamente
+- ✅ **Protección de Órdenes**: Las órdenes se mantienen al cambiar temporalidad o reiniciar el bot
 
 ---
 
@@ -101,29 +105,36 @@ flowchart TD
 ```mermaid
 graph LR
     subgraph "Panel de Control de Órdenes"
-        A1[BuyStop: ON/OFF] --> A2[Contador A:P]
-        B1[BuyLimit: ON/OFF] --> B2[Contador A:P]
-        C1[SellStop: ON/OFF] --> C2[Contador A:P]
-        D1[SellLimit: ON/OFF] --> D2[Contador A:P]
+        A1[BuyStop: ON/OFF]
+        B1[BuyLimit: ON/OFF]
+        C1[SellStop: ON/OFF]
+        D1[SellLimit: ON/OFF]
+        R1[Reponer Limits: ON/OFF] --> R2[Control Reposición]
+        R3[Reponer Stops: ON/OFF] --> R2
+        G1[Órdenes por Grupo: - Valor +] --> G2[Valor Centrado]
+        I1[Incremento por Grupo: - Valor +] --> I2[Valor Centrado]
         E1[Botón Aplicar] --> E2[Eliminar Órdenes Desactivadas]
         F1[Botón Eliminar] --> F2[Abrir Panel Quita Órdenes]
     end
     
     subgraph "Panel de Estadísticas"
-        G1[Balance/Equity] --> G2[Valores Numéricos]
-        H1[Floating P/L] --> H2[Valores Numéricos]
-        I1[Drawdown] --> I2[Valores Numéricos]
-        J1[Órdenes Activas] --> J2[Contadores]
-        K1[Órdenes Pendientes] --> K2[Contadores]
-        L1[Win Rate] --> L2[Porcentaje]
-        M1[Tipos de Orden] --> M2[Contadores A:P]
+        S1[Balance/Equity] --> S2[Valores Numéricos]
+        S3[Floating P/L] --> S4[Valores Numéricos]
+        S5[Drawdown] --> S6[Valores Numéricos]
+        S7[Buy/Sell Orders] --> S8[Contadores]
+        S9[Pending Buy/Sell] --> S10[Contadores]
+        S11[Total Profit] --> S12[Flotante + Realizado]
+        S13[Win Rate] --> S14[% Real Calculado]
+        S15[Risk Level] --> S16[% Margen Usado]
+        S17[BuyStop/BuyLimit/SellStop/SellLimit] --> S18[Contadores A:P]
     end
     
     subgraph "Panel Quita Órdenes"
         N1[Campo Magic Number] --> N2[Botón Buscar]
-        N2 --> N3[Lista de Órdenes]
+        N2 --> N3[Lista de Órdenes del Activo Actual]
         N3 --> N4[Botón Eliminar Todas]
         N4 --> N5[Botón Cerrar]
+        N6[Filtrado: Magic + Símbolo] --> N3
     end
 ```
 
@@ -152,6 +163,15 @@ graph LR
 | `cantidadDeOperaciones` | Cantidad máxima de operaciones por dirección | 50 |
 | `cantidadDeGanancia` | Objetivo de ganancia total (puntos) | 20000 |
 | `reiniciarPrograma` | Reiniciar después de alcanzar objetivo | true |
+
+### 🔄 Control de Reposición
+
+| Parámetro | Descripción | Valor por Defecto |
+|-----------|-------------|-------------------|
+| `reponerLimits` | Activar reposición de órdenes Limit | true |
+| `reponerStops` | Activar reposición de órdenes Stop | true |
+| `ordenesPorGrupo` | Cantidad de órdenes antes de aumentar incremento | 15 |
+| `incrementoPorGrupo` | Incremento adicional por grupo de órdenes | 5 |
 
 ### 🎯 Tipos de Órdenes (Activación Inicial)
 
@@ -250,32 +270,46 @@ El panel de control permite activar/desactivar tipos de órdenes en tiempo real:
 
 1. **Ubicación**: Esquina superior izquierda del gráfico
 2. **Funcionalidades**:
-   - Toggle ON/OFF para cada tipo de orden (BuyStop, BuyLimit, SellStop, SellLimit)
-   - Contadores en tiempo real: Activas (A) y Pendientes (P)
-   - Botón "Aplicar": Elimina órdenes desactivadas y coloca nuevas si están activadas
-   - Botón "Eliminar": Abre el panel de eliminación de órdenes
+   - **Toggle ON/OFF** para cada tipo de orden (BuyStop, BuyLimit, SellStop, SellLimit)
+   - **Control de Reposición**:
+     - Toggle "Reponer Limits": Activa/desactiva reposición de órdenes Limit
+     - Toggle "Reponer Stops": Activa/desactiva reposición de órdenes Stop
+   - **Configuración de Grupos** (modificable en tiempo real con botones +/-):
+     - **Órdenes por Grupo**: Cantidad de órdenes antes de aumentar el incremento (valores centrados entre botones)
+     - **Incremento por Grupo**: Incremento adicional por grupo (valores centrados entre botones)
+   - **Botón "Aplicar"**: Elimina órdenes desactivadas y coloca nuevas si están activadas
+   - **Botón "Eliminar"**: Abre el panel de eliminación de órdenes
+   
+   **Nota**: Los contadores A:P (Activas/Pendientes) solo se muestran en el panel de estadísticas, no en este panel.
 
 ### Panel de Estadísticas
 
 Muestra información en tiempo real sobre el estado del EA:
 
 - **Balance y Equity**: Estado actual de la cuenta
-- **Floating P/L**: Ganancia/pérdida flotante
+- **Floating P/L**: Ganancia/pérdida flotante (diferencia entre Equity y Balance)
 - **Drawdown**: Drawdown actual en porcentaje
-- **Órdenes Activas**: Contador de posiciones abiertas (Buy/Sell)
-- **Órdenes Pendientes**: Contador de órdenes pendientes (Buy/Sell)
-- **Total Profit**: Ganancia total acumulada
-- **Win Rate**: Porcentaje de operaciones ganadoras
-- **Risk Level**: Nivel de riesgo actual
-- **Contadores por Tipo**: Activas y Pendientes para cada tipo de orden
+- **Buy Orders / Sell Orders**: Contador de posiciones abiertas (solo del activo actual)
+- **Pending Buy / Pending Sell**: Contador de órdenes pendientes (solo del activo actual)
+- **Total Profit**: **Profit total real** = Profit flotante (posiciones abiertas) + Profit realizado (posiciones cerradas)
+- **Win Rate**: **Porcentaje real de operaciones ganadoras** del bot en el activo actual, calculado desde el inicio de la sesión
+- **Risk Level**: **Riesgo real calculado** = (Margen usado / Balance) × 100, muestra el porcentaje del balance comprometido como margen
+- **Contadores por Tipo**: Activas (A) y Pendientes (P) para cada tipo de orden (BuyStop, BuyLimit, SellStop, SellLimit)
+  - **Activas (A)**: Posiciones abiertas identificadas por tipo original usando historial de deals
+  - **Pendientes (P)**: Órdenes pendientes contadas directamente por tipo
 
 ### Panel de Eliminación de Órdenes
 
-Herramienta para gestionar órdenes por Magic Number:
+Herramienta para gestionar órdenes por Magic Number con filtrado por activo:
 
-1. **Buscar**: Lista todas las órdenes (activas y pendientes) con un Magic Number específico
-2. **Eliminar Todas**: Elimina todas las órdenes encontradas (con confirmación)
+1. **Buscar**: Lista todas las órdenes (activas y pendientes) con un Magic Number específico **del activo actual**
+2. **Eliminar Todas**: Elimina todas las órdenes encontradas del activo actual (con confirmación)
 3. **Cerrar**: Cierra el panel
+
+**Características de Seguridad**:
+- ✅ **Filtrado por Símbolo**: Solo muestra y elimina órdenes del activo donde está corriendo el bot
+- ✅ **Multi-Instancia Segura**: Puedes ejecutar múltiples bots en diferentes activos sin interferencias
+- ✅ **Protección de Datos**: Cada bot solo gestiona sus propias órdenes, incluso si comparten Magic Number
 
 ---
 
@@ -327,8 +361,28 @@ El EA puede leer el incremento desde un archivo de texto:
 #### Control en Tiempo Real
 
 - Usa el **Panel de Control** para activar/desactivar tipos de órdenes sin reiniciar el EA
-- Presiona "Aplicar" después de hacer cambios
+- **Modificar Configuración de Grupos**:
+  - Haz clic en los botones **+/-** junto a "Órdenes por Grupo" para ajustar la cantidad
+  - Haz clic en los botones **+/-** junto a "Incremento por Grupo" para ajustar el incremento
+  - Los cambios se aplican inmediatamente (no requiere presionar "Aplicar")
+- **Control de Reposición**:
+  - Activa/desactiva la reposición de Limits y Stops independientemente
+  - Los cambios se aplican inmediatamente
+- Presiona "Aplicar" después de cambiar tipos de órdenes
 - Los contadores se actualizan automáticamente
+
+#### Ejecutar Múltiples Bots
+
+Puedes ejecutar el bot en diferentes activos simultáneamente:
+
+1. **Abre múltiples gráficos** con diferentes instrumentos (ej: EURUSD, GBPUSD, USDJPY)
+2. **Arrastra el EA** a cada gráfico
+3. **Configura parámetros** específicos para cada activo si es necesario
+4. **Cada bot funciona independientemente**:
+   - Tiene su propio Magic Number
+   - Solo gestiona órdenes de su activo
+   - Los paneles muestran información específica de cada activo
+5. **Eliminación segura**: El panel de eliminar órdenes solo afecta al activo del bot actual
 
 ---
 
@@ -361,14 +415,25 @@ BuyLimit:   1.1955  ← Incremento: -45
 
 ### Incremento Progresivo
 
-Cada 15 órdenes, el incremento aumenta en 5 puntos:
+El incremento aumenta progresivamente según la configuración de grupos:
 
+**Configuración por defecto:**
+- `ordenesPorGrupo`: 15 órdenes
+- `incrementoPorGrupo`: 5 puntos
+
+**Ejemplo:**
 ```
-Órdenes 1-15:   incremento = 15 puntos
-Órdenes 16-30:  incremento = 20 puntos
-Órdenes 31-45:  incremento = 25 puntos
+Órdenes 1-15:   incremento = 15 puntos (base)
+Órdenes 16-30:  incremento = 20 puntos (15 + 5)
+Órdenes 31-45:  incremento = 25 puntos (15 + 10)
+Órdenes 46-60:  incremento = 30 puntos (15 + 15)
 ...
 ```
+
+**Modificación en Tiempo Real:**
+- Puedes cambiar `ordenesPorGrupo` e `incrementoPorGrupo` desde el panel de control
+- Usa los botones +/- para ajustar los valores
+- Los cambios se aplican a las nuevas órdenes que se coloquen
 
 ---
 
@@ -410,6 +475,59 @@ El Trailing Stop ajusta automáticamente el Stop Loss cuando el precio se mueve 
 
 ---
 
+## 🔒 Protección y Multi-Instancia
+
+### Protección de Órdenes
+
+El bot incluye múltiples mecanismos de protección para preservar tus órdenes:
+
+1. **Protección al Cambiar Temporalidad**:
+   - Al cambiar de timeframe (H1 → H4, etc.), las órdenes se mantienen
+   - Solo se limpian los objetos gráficos del panel
+   - El bot continúa funcionando en el nuevo timeframe
+
+2. **Protección al Iniciar**:
+   - Al colocar el bot en un gráfico, NO elimina órdenes existentes
+   - Respeta órdenes manuales y de otros bots
+   - Solo gestiona sus propias órdenes (identificadas por Magic Number + Símbolo)
+
+3. **Filtrado por Activo**:
+   - Todas las operaciones filtran por símbolo (activo)
+   - Cada bot solo ve y gestiona órdenes de su activo
+   - Eliminación segura: solo afecta al activo del bot actual
+
+### Ejecutar Múltiples Instancias
+
+**Escenario de Uso:**
+- Bot 1 en EURUSD con Magic Number 12345
+- Bot 2 en GBPUSD con Magic Number 12345 (mismo número)
+- Bot 3 en USDJPY con Magic Number 67890
+
+**Comportamiento:**
+- ✅ Cada bot funciona independientemente
+- ✅ Cada bot solo gestiona órdenes de su activo
+- ✅ Los paneles muestran información específica de cada activo
+- ✅ La eliminación de órdenes solo afecta al activo del bot actual
+- ✅ No hay interferencias entre bots
+
+**Ejemplo Práctico:**
+```
+Bot EURUSD:
+  - Magic: 12345
+  - Símbolo: EURUSD
+  - Panel muestra: "Órdenes encontradas (EURUSD)"
+  - Elimina solo órdenes EURUSD con magic 12345
+
+Bot GBPUSD:
+  - Magic: 12345 (mismo número)
+  - Símbolo: GBPUSD
+  - Panel muestra: "Órdenes encontradas (GBPUSD)"
+  - Elimina solo órdenes GBPUSD con magic 12345
+  - NO afecta órdenes de EURUSD
+```
+
+---
+
 ## 🛡️ Gestión de Riesgos
 
 ### Control de Drawdown
@@ -438,6 +556,33 @@ El Stop Loss se puede calcular dinámicamente usando el ATR:
 ATR = iATR(Symbol(), Period(), atrPeriod)
 SL = ATR × dynamicSLMultiplier
 ```
+
+### Métricas de Rendimiento en Tiempo Real
+
+El panel de estadísticas calcula métricas precisas:
+
+**Total Profit**:
+```mql5
+Total Profit = Profit Flotante (posiciones abiertas) + Profit Realizado (posiciones cerradas)
+```
+- Incluye tanto ganancias/pérdidas flotantes como realizadas
+- Filtrado por Magic Number y Símbolo (solo del activo actual)
+
+**Win Rate**:
+```mql5
+Win Rate = (Operaciones Ganadoras / Total de Operaciones) × 100
+```
+- Calculado desde el inicio de la sesión (`tiempo_ref`)
+- Solo cuenta operaciones del bot actual en el activo actual
+- Filtrado por Magic Number y Símbolo
+
+**Risk Level**:
+```mql5
+Risk Level = (Margen Usado / Balance) × 100
+```
+- Muestra el porcentaje real del balance comprometido como margen
+- Calculado sumando el margen de todas las posiciones abiertas del bot
+- No es un parámetro fijo, sino un cálculo dinámico basado en posiciones reales
 
 ---
 
@@ -477,7 +622,9 @@ Cada sesión del EA usa un Magic Number único para identificar sus órdenes:
 - **Rango**: 10000 - 60000
 - **Generación**: Se genera automáticamente al iniciar
 - **Persistencia**: Se mantiene durante toda la sesión
-- **Limpieza**: Al reiniciar, se eliminan órdenes del Magic Number anterior
+- **Filtrado por Activo**: Las órdenes se identifican por Magic Number + Símbolo
+- **Multi-Instancia**: Cada bot en un activo diferente puede tener su propio Magic Number
+- **Protección**: Las órdenes NO se eliminan automáticamente al iniciar o cambiar temporalidad
 
 ---
 
@@ -501,8 +648,10 @@ Cada sesión del EA usa un Magic Number único para identificar sus órdenes:
 ### Limitaciones
 
 - El EA no puede modificar órdenes ya colocadas (solo eliminar y crear nuevas)
-- Los cambios en parámetros requieren reiniciar el EA (excepto tipos de órdenes)
-- El panel de eliminación solo muestra órdenes del Magic Number actual
+- Los cambios en parámetros principales requieren reiniciar el EA (excepto tipos de órdenes y configuración de grupos)
+- El panel de eliminación solo muestra órdenes del Magic Number actual y del activo actual
+- Los contadores A:P solo se muestran en el panel de estadísticas (no en el panel de control)
+- La identificación del tipo original de posiciones activas requiere que el historial de deals esté disponible
 
 ---
 
@@ -527,9 +676,41 @@ Cada sesión del EA usa un Magic Number único para identificar sus órdenes:
 2. Intenta mover el gráfico o cambiar de timeframe
 3. Reinicia el EA
 
+### Los contadores A:P muestran 0 aunque hay órdenes
+
+1. Verifica que las órdenes tengan el Magic Number correcto del bot
+2. Verifica que las órdenes sean del mismo activo donde está corriendo el bot
+3. Revisa la pestaña "Journal" para ver si hay advertencias sobre posiciones sin comentario identificable
+4. Las posiciones activas requieren historial de deals para identificar el tipo original
+
+### Las métricas (Total Profit, Win Rate, Risk Level) no parecen correctas
+
+1. **Total Profit**: Verifica que incluya tanto profit flotante como realizado
+2. **Win Rate**: Se calcula desde el inicio de la sesión, reinicia el EA para resetear
+3. **Risk Level**: Debe reflejar el margen real usado, verifica que las posiciones estén abiertas correctamente
+
 ---
 
 ## 📝 Changelog
+
+### Versión 2.11
+- ✅ **Cálculos Mejorados de Métricas**:
+  - **Total Profit**: Ahora incluye profit flotante + profit realizado (valores reales)
+  - **Win Rate**: Calculado solo para el activo actual, filtrado por Magic Number + Símbolo
+  - **Risk Level**: Cálculo real basado en margen usado vs balance (no solo parámetro fijo)
+- ✅ **Corrección de Contadores**: Los contadores A:P solo aparecen en el panel de estadísticas
+- ✅ **Identificación Mejorada de Tipos**: Las posiciones SELL ya no se identifican incorrectamente como BuyLimit
+- ✅ **Conteo Preciso de Órdenes**: Todas las métricas filtran por símbolo para mostrar solo datos del activo actual
+- ✅ **Centrado de Valores**: Valores de "Órdenes por Grupo" e "Incremento por Grupo" centrados entre botones +/-
+
+### Versión 2.10
+- ✅ **Control de Reposición**: Toggles para activar/desactivar reposición de Limits y Stops
+- ✅ **Configuración Dinámica de Grupos**: Botones +/- para modificar órdenes por grupo e incremento por grupo en tiempo real
+- ✅ **Protección de Órdenes**: Las órdenes se mantienen al cambiar temporalidad (REASON_CHARTCHANGE)
+- ✅ **Protección al Iniciar**: Las órdenes existentes no se eliminan al colocar el bot en el gráfico
+- ✅ **Filtrado por Activo**: Panel de eliminación filtra por Magic Number + Símbolo
+- ✅ **Multi-Instancia Segura**: Soporte para ejecutar múltiples bots en diferentes activos simultáneamente
+- ✅ **Interfaz Mejorada**: Valores de configuración visibles y editables desde el panel
 
 ### Versión 2.00
 - ✅ Panel de control gráfico para activar/desactivar tipos de órdenes
