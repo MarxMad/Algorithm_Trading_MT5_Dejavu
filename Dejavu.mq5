@@ -110,7 +110,7 @@ const ENUM_BASE_CORNER ESQUINA_GRAFICO = CORNER_LEFT_UPPER;  // Cambiado a esqui
 const int X_DIST = 370;     // Panel principal: 370px desde la izquierda (después del panel de control + 30px margen)
 const int Y_DIST = 20;
 const int X_SIZE = 300;     // Ancho del panel
-const int Y_SIZE = 520;  // Altura del panel
+const int Y_SIZE = 400;  // Altura del panel (reducida al eliminar sección redundante)
 
 // Variables globales para control de tipos de órdenes (se inicializarán en OnInit)
 bool g_tBuyStop;
@@ -506,12 +506,7 @@ void CrearPanel()
         "Pending Sell:",
         "Total Profit:",
         "Win Rate:",
-        "Risk Level:",
-        "━━━━━━━━━━━━━━━━━━━━", // Separador
-        "BuyStop:",
-        "BuyLimit:",
-        "SellStop:",
-        "SellLimit:"
+        "Risk Level:"
     };
     
     int yOffset = 45; // Empezar después del título
@@ -679,10 +674,6 @@ void ActualizarPanel()
         riskLevel = (totalMarginUsed / balance) * 100;  // Porcentaje de balance usado como margen
     }
     
-    // Contar órdenes por tipo
-    int bsA, bsP, blA, blP, ssA, ssP, slA, slP;
-    ContarOrdenesPorTipo(bsA, bsP, blA, blP, ssA, ssP, slA, slP);
-    
     // Actualizar valores en el panel con mejor formato
     string valores[] = {
         "", // Título (índice 0, no se usa)
@@ -696,17 +687,11 @@ void ActualizarPanel()
         IntegerToString(pendingSell),
         DoubleToString(totalProfit + realizedProfit, 2),  // Profit total = flotante + realizado
         DoubleToString(winRate, 1) + "%",
-        DoubleToString(riskLevel, 2) + "%",  // Risk Level real basado en margen usado
-        "", // Separador (índice 12, no tiene valor)
-        "A:" + IntegerToString(bsA) + " P:" + IntegerToString(bsP),
-        "A:" + IntegerToString(blA) + " P:" + IntegerToString(blP),
-        "A:" + IntegerToString(ssA) + " P:" + IntegerToString(ssP),
-        "A:" + IntegerToString(slA) + " P:" + IntegerToString(slP)
+        DoubleToString(riskLevel, 2) + "%"  // Risk Level real basado en margen usado
     };
     
     for(int i=1; i<ArraySize(valores); i++)
     {
-        if(i == 12) continue; // Saltar separador
         
         color valorColor = COLOR_TEXTO;
         
