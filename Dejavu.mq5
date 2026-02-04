@@ -304,6 +304,10 @@ bool CompararGanancia();
 void InicializarPreciosBase();
 bool CompararPerdida();
 bool FueraDeRango();
+// Nuevas funciones para compatibilidad entre brokers
+void ConfigurarTipoLlenado();
+bool ValidarDistanciasOrden(double precioOrden, double sl, double tp, ENUM_ORDER_TYPE tipoOrden);
+string InterpretarError(int errorCode, string tipoOrden, double precio, double sl, double tp);
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -426,6 +430,8 @@ int OnInit()
    {
       tiempo_ref = TimeCurrent();
       trade.SetExpertMagicNumber(MAGICN);
+      // FASE 1: Configurar tipo de llenado automáticamente según el broker
+      ConfigurarTipoLlenado();
    }
 //---
    return(INIT_SUCCEEDED);
@@ -1430,6 +1436,215 @@ bool RevisarStops()
    return (_ret);
 }
 //+------------------------------------------------------------------+
+//| FASE 1: Configurar Tipo de Llenado                              |
+//+------------------------------------------------------------------+
+//| Detecta y configura automáticamente el tipo de llenado soportado  |
+//| por el broker. Esto es crítico para brokers como XM que requieren|
+//| configuración explícita del tipo de llenado.                     |
+//+------------------------------------------------------------------+
+void ConfigurarTipoLlenado()
+{
+   // Obtener modo de llenado del símbolo
+   int fillingMode = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   
+   // Intentar configurar según disponibilidad (prioridad: FOK > IOC > RETURN)
+   if((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+   {
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+      Print("✓ Tipo de llenado configurado: FOK (Fill or Kill) - Compatible con XM");
+   }
+   else if((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+   {
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+      Print("✓ Tipo de llenado configurado: IOC (Immediate or Cancel)");
+   }
+   else if((fillingMode & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
+   {
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+      Print("✓ Tipo de llenado configurado: RETURN (Llenado parcial permitido)");
+   }
+   else
+   {
+      // Fallback: intentar FOK primero (más común en brokers estrictos como XM)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+      Print("⚠ Tipo de llenado: FOK (fallback - puede requerir ajuste manual)");
+   }
+}
+//+------------------------------------------------------------------+
+//| FASE 2: Validar Distancias de Orden                             |
+//+------------------------------------------------------------------+
+//| Valida que una orden pendiente cumpla con los requisitos mínimos|
+//| del broker antes de intentar colocarla. Esto previene errores   |
+//| de rechazo por parte del broker.                                 |
+//+------------------------------------------------------------------+
+bool ValidarDistanciasOrden(double precioOrden, double sl, double tp, ENUM_ORDER_TYPE tipoOrden)
+{
+   // Obtener requisitos del broker
+   long minStopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long freezeLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   
+   // Obtener precio actual según tipo de orden
+   double precioActual = 0;
+   if(tipoOrden == ORDER_TYPE_BUY_STOP || tipoOrden == ORDER_TYPE_BUY_LIMIT)
+   {
+      precioActual = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   }
+   else if(tipoOrden == ORDER_TYPE_SELL_STOP || tipoOrden == ORDER_TYPE_SELL_LIMIT)
+   {
+      precioActual = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   }
+   else
+   {
+      Print("⚠ ValidarDistanciasOrden: Tipo de orden no reconocido");
+      return false;
+   }
+   
+   // Validar distancia mínima del precio actual (freeze level)
+   double distanciaActual = MathAbs(precioOrden - precioActual);
+   double minFreezeDistance = freezeLevel * Point();
+   if(distanciaActual < minFreezeDistance && freezeLevel > 0)
+   {
+      Print("❌ Orden rechazada: muy cerca del precio actual. Distancia: ", 
+            DoubleToString(distanciaActual/Point(), 2), " puntos. Mínimo requerido: ", freezeLevel);
+      return false;
+   }
+   
+   // Validar distancia mínima de SL
+   double distanciaSL = MathAbs(precioOrden - sl);
+   double minStopDistance = minStopLevel * Point();
+   if(distanciaSL < minStopDistance && minStopLevel > 0)
+   {
+      Print("❌ Orden rechazada: SL muy cerca. Distancia: ", 
+            DoubleToString(distanciaSL/Point(), 2), " puntos. Mínimo requerido: ", minStopLevel);
+      return false;
+   }
+   
+   // Validar distancia mínima de TP
+   double distanciaTP = MathAbs(precioOrden - tp);
+   if(distanciaTP < minStopDistance && minStopLevel > 0)
+   {
+      Print("❌ Orden rechazada: TP muy cerca. Distancia: ", 
+            DoubleToString(distanciaTP/Point(), 2), " puntos. Mínimo requerido: ", minStopLevel);
+      return false;
+   }
+   
+   // Validar dirección de la orden según tipo
+   if(tipoOrden == ORDER_TYPE_BUY_STOP && precioOrden <= precioActual)
+   {
+      Print("❌ Orden BUYSTOP rechazada: precio debe estar por encima del precio actual");
+      return false;
+   }
+   if(tipoOrden == ORDER_TYPE_SELL_STOP && precioOrden >= precioActual)
+   {
+      Print("❌ Orden SELLSTOP rechazada: precio debe estar por debajo del precio actual");
+      return false;
+   }
+   if(tipoOrden == ORDER_TYPE_BUY_LIMIT && precioOrden >= precioActual)
+   {
+      Print("❌ Orden BUYLIMIT rechazada: precio debe estar por debajo del precio actual");
+      return false;
+   }
+   if(tipoOrden == ORDER_TYPE_SELL_LIMIT && precioOrden <= precioActual)
+   {
+      Print("❌ Orden SELLLIMIT rechazada: precio debe estar por encima del precio actual");
+      return false;
+   }
+   
+   return true;
+}
+//+------------------------------------------------------------------+
+//| FASE 3: Interpretar Error de Trading                            |
+//+------------------------------------------------------------------+
+//| Proporciona mensajes descriptivos para códigos de error comunes |
+//| del broker, facilitando el diagnóstico de problemas.             |
+//+------------------------------------------------------------------+
+string InterpretarError(int errorCode, string tipoOrden, double precio, double sl, double tp)
+{
+   string mensaje = "Error colocando " + tipoOrden + ": ";
+   
+   switch(errorCode)
+   {
+      case 10004: // TRADE_RETCODE_REQUOTE
+         mensaje += "Requote - Precio cambió. Reintentando...";
+         break;
+      case 10006: // TRADE_RETCODE_REJECT
+         mensaje += "Orden rechazada por el broker. Verificar parámetros.";
+         break;
+      case 10007: // TRADE_RETCODE_CANCEL
+         mensaje += "Orden cancelada.";
+         break;
+      case 10008: // TRADE_RETCODE_PLACED
+         mensaje += "Orden colocada exitosamente.";
+         break;
+      case 10009: // TRADE_RETCODE_DONE
+         mensaje += "Orden ejecutada inmediatamente.";
+         break;
+      case 10010: // TRADE_RETCODE_PARTIAL
+         mensaje += "Orden ejecutada parcialmente.";
+         break;
+      case 10011: // TRADE_RETCODE_NO_REPLY
+         mensaje += "Sin respuesta del servidor. Reintentando...";
+         break;
+      case 10012: // TRADE_RETCODE_INVALID
+         mensaje += "Parámetros inválidos. Precio: " + DoubleToString(precio, _Digits) + 
+                   " SL: " + DoubleToString(sl, _Digits) + 
+                   " TP: " + DoubleToString(tp, _Digits);
+         break;
+      case 10013: // TRADE_RETCODE_INVALID_VOLUME
+         mensaje += "Volumen inválido.";
+         break;
+      case 10014: // TRADE_RETCODE_INVALID_STOPS
+         mensaje += "Stops inválidos. Verificar distancias mínimas del broker.";
+         break;
+      case 10015: // TRADE_RETCODE_TRADE_DISABLED
+         mensaje += "Trading deshabilitado en la cuenta.";
+         break;
+      case 10016: // TRADE_RETCODE_MARKET_CLOSED
+         mensaje += "Mercado cerrado.";
+         break;
+      case 10017: // TRADE_RETCODE_NO_MONEY
+         mensaje += "Fondos insuficientes.";
+         break;
+      case 10018: // TRADE_RETCODE_PRICE_CHANGED
+         mensaje += "Precio cambió. Reintentando...";
+         break;
+      case 10019: // TRADE_RETCODE_PRICE_OFF
+         mensaje += "Precio fuera de rango permitido.";
+         break;
+      case 10020: // TRADE_RETCODE_INVALID_FILL
+         mensaje += "Tipo de llenado inválido. Verificar configuración.";
+         break;
+      case 10021: // TRADE_RETCODE_OFF quotes
+         mensaje += "Cotizaciones desactivadas.";
+         break;
+      case 10022: // TRADE_RETCODE_BROKER_BUSY
+         mensaje += "Broker ocupado. Reintentando...";
+         break;
+      case 10023: // TRADE_RETCODE_REQUOTE
+         mensaje += "Requote recibido.";
+         break;
+      case 10024: // TRADE_RETCODE_ORDER_LOCKED
+         mensaje += "Orden bloqueada.";
+         break;
+      case 10025: // TRADE_RETCODE_LONG_ONLY
+         mensaje += "Solo se permiten posiciones largas.";
+         break;
+      case 10026: // TRADE_RETCODE_SHORT_ONLY
+         mensaje += "Solo se permiten posiciones cortas.";
+         break;
+      case 10027: // TRADE_RETCODE_CLOSE_ONLY
+         mensaje += "Solo se permiten cierres de posiciones.";
+         break;
+      default:
+         mensaje += "Código de error: " + IntegerToString(errorCode) + 
+                   " (Precio: " + DoubleToString(precio, _Digits) + 
+                   " SL: " + DoubleToString(sl, _Digits) + 
+                   " TP: " + DoubleToString(tp, _Digits) + ")";
+   }
+   
+   return mensaje;
+}
+//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 //| Colocar Órdenes Iniciales                                        |
 //+------------------------------------------------------------------+
@@ -1500,19 +1715,39 @@ void ColocarOrdenesIniciales ()
       // Coloco ordenes de SELLSTOP
       if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_SELL) && RevisarNuevaOrden() && g_tSellStop)
       {
+         double precioOrden = NormalizeDouble(ultimoPrecioBid, _Digits);
+         double slOrden = NormalizeDouble(ultimoPrecioAsk + (slinverso * Point()), _Digits);
          double tpValue = usarTPDinamico ? CalcularTakeProfitDinamico(incremento_temp) : (tpinverso * Point());
-         if(!trade.SellStop(lot, NormalizeDouble(ultimoPrecioBid, _Digits), _Symbol, NormalizeDouble(ultimoPrecioAsk + (slinverso * Point()), _Digits), NormalizeDouble(ultimoPrecioAsk - tpValue, _Digits), 0, 0, "5"))
+         double tpOrden = NormalizeDouble(ultimoPrecioAsk - tpValue, _Digits);
+         
+         // FASE 2: Validar distancias antes de colocar orden
+         if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_SELL_STOP))
          {
-            Print("Error placing SELLSTOP order: ", GetLastError());
+            if(!trade.SellStop(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "5"))
+            {
+               // FASE 3: Manejo mejorado de errores
+               int errorCode = GetLastError();
+               Print(InterpretarError(errorCode, "SELLSTOP", precioOrden, slOrden, tpOrden));
+            }
          }
       }
       // Coloco ordenes de BUYLIMIT
       if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY) && RevisarNuevaOrden() && g_tBuyLimit)
       {
+         double precioOrden = NormalizeDouble(ultimoPrecioAsk, _Digits);
+         double slOrden = NormalizeDouble(ultimoPrecioBid - (stopLoss * Point()), _Digits);
          double tpValue = usarTPDinamico ? CalcularTakeProfitDinamico(incremento_temp) : (takeProfit * Point());
-         if(!trade.BuyLimit(lot, NormalizeDouble(ultimoPrecioAsk, _Digits), _Symbol, NormalizeDouble(ultimoPrecioBid - (stopLoss * Point()), _Digits), NormalizeDouble(ultimoPrecioBid + tpValue, _Digits), 0, 0, "2"))
+         double tpOrden = NormalizeDouble(ultimoPrecioBid + tpValue, _Digits);
+         
+         // FASE 2: Validar distancias antes de colocar orden
+         if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_BUY_LIMIT))
          {
-            Print("Error placing BUYLIMIT order: ", GetLastError());
+            if(!trade.BuyLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "2"))
+            {
+               // FASE 3: Manejo mejorado de errores
+               int errorCode = GetLastError();
+               Print(InterpretarError(errorCode, "BUYLIMIT", precioOrden, slOrden, tpOrden));
+            }
          }
       }
    }
@@ -1532,19 +1767,39 @@ void ColocarOrdenesIniciales ()
       // Coloco orden de SELLIMIT
       if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_SELL) && RevisarNuevaOrden() && g_tSellLimit)
       {
+         double precioOrden = NormalizeDouble(ultimoPrecioBid, _Digits);
+         double slOrden = NormalizeDouble(ultimoPrecioAsk + (stopLoss * Point()), _Digits);
          double tpValue = usarTPDinamico ? CalcularTakeProfitDinamico(incremento_temp) : (takeProfit * Point());
-         if(!trade.SellLimit(lot, NormalizeDouble(ultimoPrecioBid, _Digits), _Symbol, NormalizeDouble(ultimoPrecioAsk + (stopLoss * Point()), _Digits), NormalizeDouble(ultimoPrecioAsk - tpValue, _Digits), 0, 0, "3"))
+         double tpOrden = NormalizeDouble(ultimoPrecioAsk - tpValue, _Digits);
+         
+         // FASE 2: Validar distancias antes de colocar orden
+         if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_SELL_LIMIT))
          {
-            Print("Error placing SELLLIMIT order: ", GetLastError());
+            if(!trade.SellLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "3"))
+            {
+               // FASE 3: Manejo mejorado de errores
+               int errorCode = GetLastError();
+               Print(InterpretarError(errorCode, "SELLLIMIT", precioOrden, slOrden, tpOrden));
+            }
          }
       }
       // Coloco orden de BUYSTOP (separado del SELLLIMIT)
       if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY) && RevisarNuevaOrden() && g_tBuyStop)
-         {
+      {
+         double precioOrden = NormalizeDouble(ultimoPrecioAsk, _Digits);
+         double slOrden = NormalizeDouble(ultimoPrecioBid - (slinverso * Point()), _Digits);
          double tpValueBS = usarTPDinamico ? CalcularTakeProfitDinamico(incremento_temp) : (tpinverso * Point());
-         if(!trade.BuyStop(lot, NormalizeDouble(ultimoPrecioAsk, _Digits), _Symbol, NormalizeDouble(ultimoPrecioBid - (slinverso * Point()), _Digits), NormalizeDouble(ultimoPrecioBid + tpValueBS, _Digits), 0, 0, "4"))
+         double tpOrden = NormalizeDouble(ultimoPrecioBid + tpValueBS, _Digits);
+         
+         // FASE 2: Validar distancias antes de colocar orden
+         if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_BUY_STOP))
+         {
+            if(!trade.BuyStop(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "4"))
             {
-               Print("Error placing BUYSTOP order: ", GetLastError());
+               // FASE 3: Manejo mejorado de errores
+               int errorCode = GetLastError();
+               Print(InterpretarError(errorCode, "BUYSTOP", precioOrden, slOrden, tpOrden));
+            }
          }
       }
    }
@@ -1639,22 +1894,38 @@ void ReponerOrdenes()
                         // Si ganó, convertir a SellLimit (pero solo si reposición de Limits está activada)
                         if(g_reponerLimits)
                 {
-                    trade.SellLimit(lot, 
-                        NormalizeDouble(order.price, _Digits),
-                        _Symbol,
-                        NormalizeDouble(order.price + diferenciaBidAsk + (stopLoss * Point()), _Digits),
-                        NormalizeDouble(order.price + diferenciaBidAsk - (takeProfit * Point()), _Digits),
-                        0, 0, "3");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.price + diferenciaBidAsk + (stopLoss * Point()), _Digits);
+                    double tpOrden = NormalizeDouble(order.price + diferenciaBidAsk - (takeProfit * Point()), _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_SELL_LIMIT))
+                    {
+                        if(!trade.SellLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "3"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "SELLLIMIT (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
                         }
                 }
                 else if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_SELL))
                 {
-                    trade.SellStop(lot,
-                        NormalizeDouble(order.price, _Digits),
-                        _Symbol,
-                        NormalizeDouble(order.sl, _Digits),
-                        NormalizeDouble(order.tp, _Digits),
-                        0, 0, "5");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.sl, _Digits);
+                    double tpOrden = NormalizeDouble(order.tp, _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_SELL_STOP))
+                    {
+                        if(!trade.SellStop(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "5"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "SELLSTOP (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
                 }
             }
             }
@@ -1663,12 +1934,20 @@ void ReponerOrdenes()
             {
                 if(g_reponerLimits)  // Solo reponer si está activado
             {
-                trade.BuyLimit(lot,
-                    NormalizeDouble(order.price, _Digits),
-                    _Symbol,
-                    NormalizeDouble(order.sl, _Digits),
-                    NormalizeDouble(order.tp, _Digits),
-                    0, 0, "2");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.sl, _Digits);
+                    double tpOrden = NormalizeDouble(order.tp, _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_BUY_LIMIT))
+                    {
+                        if(!trade.BuyLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "2"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "BUYLIMIT (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
             }
             }
             // SELLLIMIT - Verificar si reposición de Limits está activada
@@ -1676,12 +1955,20 @@ void ReponerOrdenes()
             {
                 if(g_reponerLimits)  // Solo reponer si está activado
             {
-                trade.SellLimit(lot,
-                    NormalizeDouble(order.price, _Digits),
-                    _Symbol,
-                    NormalizeDouble(order.sl, _Digits),
-                    NormalizeDouble(order.tp, _Digits),
-                    0, 0, "3");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.sl, _Digits);
+                    double tpOrden = NormalizeDouble(order.tp, _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_SELL_LIMIT))
+                    {
+                        if(!trade.SellLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "3"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "SELLLIMIT (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
             }
             }
             // BUYSTOP - Verificar si reposición de Stops está activada
@@ -1694,22 +1981,38 @@ void ReponerOrdenes()
                         // Si ganó, convertir a BuyLimit (pero solo si reposición de Limits está activada)
                         if(g_reponerLimits)
                 {
-                    trade.BuyLimit(lot,
-                        NormalizeDouble(order.price, _Digits),
-                        _Symbol,
-                        NormalizeDouble(order.price - diferenciaBidAsk - (stop_loss * Point()), _Digits),
-                        NormalizeDouble(order.price - diferenciaBidAsk + (take_profit * Point()), _Digits),
-                        0, 0, "2");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.price - diferenciaBidAsk - (stop_loss * Point()), _Digits);
+                    double tpOrden = NormalizeDouble(order.price - diferenciaBidAsk + (take_profit * Point()), _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_BUY_LIMIT))
+                    {
+                        if(!trade.BuyLimit(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "2"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "BUYLIMIT (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
                         }
                 }
                 else if(CheckMoneyForTrade(_Symbol, lot, POSITION_TYPE_BUY))
                 {
-                    trade.BuyStop(lot,
-                        NormalizeDouble(order.price, _Digits),
-                        _Symbol,
-                        NormalizeDouble(order.sl, _Digits),
-                        NormalizeDouble(order.tp, _Digits),
-                        0, 0, "4");
+                    double precioOrden = NormalizeDouble(order.price, _Digits);
+                    double slOrden = NormalizeDouble(order.sl, _Digits);
+                    double tpOrden = NormalizeDouble(order.tp, _Digits);
+                    
+                    // FASE 2: Validar distancias antes de colocar orden
+                    if(ValidarDistanciasOrden(precioOrden, slOrden, tpOrden, ORDER_TYPE_BUY_STOP))
+                    {
+                        if(!trade.BuyStop(lot, precioOrden, _Symbol, slOrden, tpOrden, 0, 0, "4"))
+                        {
+                           // FASE 3: Manejo mejorado de errores
+                           int errorCode = GetLastError();
+                           Print(InterpretarError(errorCode, "BUYSTOP (reposición)", precioOrden, slOrden, tpOrden));
+                        }
+                    }
                     }
                 }
             }
